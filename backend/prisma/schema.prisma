@@ -1,0 +1,75 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Meeting {
+  id              String   @id @default(cuid())
+  calendarEventId String   @unique
+  meetId          String?  @unique // Google Meet conference ID from Reports API
+  title           String
+  startTime       DateTime
+  endTime         DateTime
+  meetUrl         String
+  organizerEmail  String
+  processed       Boolean  @default(false) // true once Reports API has been fetched
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  attendance  MeetingAttendance[]
+
+  @@map("meetings")
+}
+
+model Attendee {
+  id          String  @id @default(cuid())
+  email       String  @unique // global — one record per person across all meetings
+  displayName String
+  hidden       Boolean @default(false)
+  isLeadership Boolean @default(false)
+
+  attendance MeetingAttendance[]
+
+  @@map("attendees")
+}
+
+model MeetingExclusionRule {
+  id        String   @id @default(cuid())
+  name      String   @default("") // optional human-readable label
+  pattern   String
+  createdAt DateTime @default(now())
+
+  @@map("meeting_exclusion_rules")
+}
+
+// One row per (meeting, attendee) — their actual join/leave from Reports API
+model MeetingAttendance {
+  id          String    @id @default(cuid())
+  meetingId   String
+  attendeeId  String
+  joinTime    DateTime? // null = never joined
+  leaveTime   DateTime?
+  durationMin Int?      // total minutes in call
+  minutesLate Int?      // null = never joined; 0 = on time
+  wasLate     Boolean   @default(false)
+  wasInvited  Boolean   @default(true) // from Calendar; false = joined but wasn't on invite
+
+  // Camera-on tracking — sourced from the Meet Reports API's video_send_seconds,
+  // i.e. how long this person's client was actually sending a video stream.
+  // This is NOT a live on/off toggle log — someone can flip camera off/on mid-call
+  // and it nets out the same — it's "% of the meeting they were visibly on camera."
+  videoSendSeconds Int?     // raw seconds of outgoing video, null = no data / never joined
+  cameraOnRatio    Float?   // videoSendSeconds / durationSeconds, 0–1, null if not computable
+  cameraOff        Boolean  @default(false) // cameraOnRatio below CAMERA_OFF_THRESHOLD_RATIO (see src/config.ts)
+
+  meeting  Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  attendee Attendee @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
+
+  @@unique([meetingId, attendeeId])
+  @@map("meeting_attendance")
+}
