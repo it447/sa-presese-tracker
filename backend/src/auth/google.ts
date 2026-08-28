@@ -13,16 +13,22 @@ const SCOPES = [
 const _clients = new Map<string, JWT>();
 
 function loadKey(): { client_email: string; private_key: string } {
-  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    const raw = Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_JSON, "base64").toString("utf-8");
-    return JSON.parse(raw);
+  const envValue = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (envValue) {
+    const trimmed = envValue.trim();
+    // Accept either the raw JSON (pasted directly) or a base64-encoded copy.
+    if (trimmed.startsWith("{")) {
+      return JSON.parse(trimmed);
+    }
+    const decoded = Buffer.from(trimmed, "base64").toString("utf-8");
+    return JSON.parse(decoded);
   }
   if (fs.existsSync(SERVICE_ACCOUNT_PATH)) {
     return JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_PATH, "utf-8"));
   }
   throw new Error(
     `No Google service account credentials found.\n` +
-    `Either set GOOGLE_SERVICE_ACCOUNT_JSON (base64-encoded) or place service-account.json at ${SERVICE_ACCOUNT_PATH}.`
+    `Either set GOOGLE_SERVICE_ACCOUNT_JSON (raw JSON or base64-encoded) or place service-account.json at ${SERVICE_ACCOUNT_PATH}.`
   );
 }
 

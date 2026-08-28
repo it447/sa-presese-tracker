@@ -10,6 +10,7 @@ import { getMeetAttendance, extractMeetCode } from "../reports/client";
 import prisma from "../db/client";
 import { LATE_THRESHOLD_MINUTES, computeCameraStats } from "../config";
 import { postWeeklyReport } from "../slack/client";
+import { getMonitoredEmails } from "../lib/monitoredEmails";
 
 const router = Router();
 
@@ -27,7 +28,26 @@ router.post("/sync-calendar", async (req: Request, res: Response) => {
   if (!verifyCronSecret(req, res)) return;
 
   try {
-    const events = await getUpcomingMeetings(24 * 60);
+    const monitoredEmails = await getMonitoredEmails();
+
+    // Track events AND which calendars they appeared on, same as the local
+    // scheduler — dedupe by calendarEventId across everyone's calendars.
+    const allEvents = new Map<string, Awaited<ReturnType<typeof getUpcomingMeetings>>[number]>();
+    const eventCalendarOwners = new Map<string, Set<string>>();
+
+    for (const email of monitoredEmails) {
+      try {
+        const events = await getUpcomingMeetings(24 * 60, email);
+        for (const e of events) {
+          allEvents.set(e.id, e);
+          if (!eventCalendarOwners.has(e.id)) eventCalendarOwners.set(e.id, new Set());
+          eventCalendarOwners.get(e.id)!.add(email);
+        }
+      } catch (err) {
+        console.error(`[cron/sync-calendar] Failed to fetch events for ${email}:`, err);
+      }
+    }
+    const events = [...allEvents.values()];
 
     for (const event of events) {
       const meetCode = extractMeetCode(event.meetUrl);
@@ -62,19 +82,30 @@ router.post("/sync-calendar", async (req: Request, res: Response) => {
         },
       });
 
+      // Full set of @scalearmy.com people who should have attendance rows:
+      // the event.attendees list PLUS any calendar owners this event appeared on.
+      const invitedEmails = new Set<string>();
       for (const a of event.attendees) {
+        if (a.email.endsWith("@scalearmy.com")) invitedEmails.add(a.email);
+      }
+      for (const owner of eventCalendarOwners.get(event.id) ?? []) {
+        if (owner.endsWith("@scalearmy.com")) invitedEmails.add(owner);
+      }
+
+      for (const email of invitedEmails) {
+        const displayName = event.attendees.find((a) => a.email === email)?.displayName ?? email.split("@")[0];
         await prisma.attendee.upsert({
-          where: { email: a.email },
-          update: { displayName: a.displayName },
-          create: { email: a.email, displayName: a.displayName },
+          where: { email },
+          update: { displayName },
+          create: { email, displayName },
         });
       }
 
       const meeting = await prisma.meeting.findUnique({ where: { calendarEventId: event.id } });
       if (!meeting) continue;
 
-      for (const a of event.attendees) {
-        const attendee = await prisma.attendee.findUnique({ where: { email: a.email } });
+      for (const email of invitedEmails) {
+        const attendee = await prisma.attendee.findUnique({ where: { email } });
         if (!attendee) continue;
         await prisma.meetingAttendance.upsert({
           where: { meetingId_attendeeId: { meetingId: meeting.id, attendeeId: attendee.id } },
@@ -84,7 +115,7 @@ router.post("/sync-calendar", async (req: Request, res: Response) => {
       }
     }
 
-    res.json({ ok: true, synced: events.length });
+    res.json({ ok: true, synced: events.length, monitoredEmails: monitoredEmails.length });
   } catch (err: any) {
     console.error("[cron/sync-calendar]", err);
     res.status(500).json({ error: err.message });
@@ -119,6 +150,8 @@ router.post("/process-meetings", async (req: Request, res: Response) => {
       }
 
       for (const participant of report.participants) {
+        if (!participant.email.endsWith("@scalearmy.com")) continue;
+
         const attendee = await prisma.attendee.upsert({
           where: { email: participant.email },
           update: { displayName: participant.displayName },
