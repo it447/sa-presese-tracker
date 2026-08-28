@@ -4,24 +4,7 @@ import prisma from "../db/client";
 import { getMeetAttendance, extractMeetCode } from "../reports/client";
 import { LATE_THRESHOLD_MINUTES, computeCameraStats } from "../config";
 import { postWeeklyReport } from "../slack/client";
-
-const SEED_EMAILS = (process.env.MONITORED_EMAILS || process.env.GOOGLE_SUBJECT_EMAIL || "")
-  .split(",")
-  .map((e) => e.trim())
-  .filter(Boolean);
-
-/**
- * Build the full list of emails to sync calendars for:
- * env-var seeds + every non-hidden @scalearmy.com attendee already in DB.
- */
-async function getMonitoredEmails(): Promise<string[]> {
-  const dbAttendees = await prisma.attendee.findMany({
-    where: { email: { endsWith: "@scalearmy.com" }, hidden: false },
-    select: { email: true },
-  });
-  const all = new Set([...SEED_EMAILS, ...dbAttendees.map((a) => a.email)]);
-  return Array.from(all);
-}
+import { getMonitoredEmails } from "../lib/monitoredEmails";
 
 /**
  * Starts two cron jobs:
